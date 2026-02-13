@@ -1,9 +1,22 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { Mic, MicOff, Radio, Settings, History, Signal, Wifi, Battery, User, ShieldAlert, Users, Bot, Link as LinkIcon, RefreshCw } from 'lucide-react';
+import { 
+  Mic, 
+  MicOff, 
+  Settings, 
+  History, 
+  Signal, 
+  Wifi, 
+  Battery, 
+  ShieldAlert, 
+  Users, 
+  Bot, 
+  Link as LinkIcon, 
+  RefreshCw 
+} from 'lucide-react';
 import { Peer, MediaConnection } from 'peerjs';
-import { ConnectionStatus, PTTStatus, ChatMessage, AppMode } from './types.ts';
+import { ConnectionStatus, PTTStatus, AppMode } from './types.ts';
 import { decodeBase64, decodeAudioData, createPCMBlob } from './utils/audioUtils.ts';
 
 const SYSTEM_INSTRUCTION = `You are a professional radio dispatcher on a secure PoC network. 
@@ -37,7 +50,12 @@ const App: React.FC = () => {
 
   // --- PEER INITIALIZATION ---
   useEffect(() => {
-    // Generate a simple 4-digit ID
+    // Cross-browser AudioContext shim
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) {
+      setErrorMessage("This browser does not support high-quality audio APIs.");
+    }
+
     const randomId = Math.floor(1000 + Math.random() * 9000).toString();
     const peer = new Peer(`POC-${randomId}`);
     
@@ -47,7 +65,6 @@ const App: React.FC = () => {
     });
 
     peer.on('call', (call) => {
-      console.log('Incoming radio call...');
       navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
         localStreamRef.current = stream;
         stream.getAudioTracks().forEach(t => t.enabled = false);
@@ -57,18 +74,17 @@ const App: React.FC = () => {
         setAppMode('human');
         setConnectionStatus('connected');
       }).catch(err => {
-        setErrorMessage("Microphone access denied for incoming call.");
+        setErrorMessage("Mic required for incoming calls.");
       });
     });
 
     peer.on('error', (err) => {
-      console.error('PeerJS error:', err);
       if (err.type === 'peer-unavailable') {
-        setErrorMessage("Target Radio ID not found.");
+        setErrorMessage("Radio Unit not found.");
       } else {
-        setErrorMessage(`Network error: ${err.type}`);
+        console.error('Peer error:', err);
       }
-      setConnectionStatus('error');
+      setConnectionStatus('disconnected');
     });
 
     peerRef.current = peer;
@@ -82,10 +98,10 @@ const App: React.FC = () => {
     call.on('stream', (remoteStream) => {
       remoteStreamRef.current = remoteStream;
       audioRef.current.srcObject = remoteStream;
-      audioRef.current.play().catch(e => console.error("Audio playback error:", e));
+      audioRef.current.play().catch(e => console.error("Auto-play failed:", e));
       
-      // Volume monitor for RX status
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const audioContext = new AudioContextClass();
       const source = audioContext.createMediaStreamSource(remoteStream);
       const analyser = audioContext.createAnalyser();
       source.connect(analyser);
@@ -128,20 +144,26 @@ const App: React.FC = () => {
         setConnectionStatus('connected');
       }
     } catch (err) {
-      setErrorMessage("Microphone permission is required for Radio Link.");
+      setErrorMessage("Microphone access is mandatory.");
       setConnectionStatus('error');
     }
   };
 
-  // --- GEMINI DISPATCH LOGIC ---
   const connectToGemini = useCallback(async () => {
     if (connectionStatus === 'connecting' || connectionStatus === 'connected') return;
+    
+    if (!process.env.API_KEY) {
+      setErrorMessage("API Key missing. Check Netlify Env Vars.");
+      return;
+    }
+
     setConnectionStatus('connecting');
     setErrorMessage(null);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      inputAudioContextRef.current = new AudioContextClass({ sampleRate: 16000 });
+      outputAudioContextRef.current = new AudioContextClass({ sampleRate: 24000 });
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -170,8 +192,8 @@ const App: React.FC = () => {
           },
           onclose: () => setConnectionStatus('disconnected'),
           onerror: (e) => {
-            console.error("Gemini Live Error:", e);
-            setErrorMessage("Communication link lost.");
+            console.error(e);
+            setErrorMessage("Satellite link failed.");
             setConnectionStatus('error');
           }
         }
@@ -179,13 +201,11 @@ const App: React.FC = () => {
       sessionPromiseRef.current = sessionPromise;
       await sessionPromise;
     } catch (err) {
-      console.error("Gemini connection error:", err);
-      setErrorMessage("Failed to establish satellite link.");
+      setErrorMessage("Link authorization failed.");
       setConnectionStatus('error');
     }
   }, [connectionStatus]);
 
-  // --- PTT CONTROL ---
   const startTransmitting = async () => {
     if (connectionStatus !== 'connected') return;
     setPttStatus('transmitting');
@@ -316,8 +336,8 @@ const App: React.FC = () => {
                 <div 
                   key={i} 
                   className={`w-1 rounded-full transition-all duration-150 ${
-                    pttStatus === 'transmitting' ? 'bg-red-500 h-8 animate-[pulse_0.5s_infinite]' :
-                    pttStatus === 'receiving' ? 'bg-emerald-500 h-8 animate-[pulse_0.8s_infinite]' : 'bg-slate-700 h-1'
+                    pttStatus === 'transmitting' ? 'bg-red-500 h-8 animate-pulse' :
+                    pttStatus === 'receiving' ? 'bg-emerald-500 h-8 animate-pulse' : 'bg-slate-700 h-1'
                   }`}
                   style={{ animationDelay: `${i * 0.05}s` }}
                 />
