@@ -1,0 +1,7 @@
+{
+  "name": "PoC Radio",
+  "description": "A professional-grade Push-to-Talk over Cellular (PoC) simulator powered by Gemini Live API for low-latency voice communication and dispatch services.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
