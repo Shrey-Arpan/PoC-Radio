@@ -1,10 +1,9 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { 
   Mic, 
   MicOff, 
-  Settings, 
-  History, 
   Signal, 
   Wifi, 
   Battery, 
@@ -12,7 +11,9 @@ import {
   Users, 
   Bot, 
   Link as LinkIcon, 
-  RefreshCw 
+  RefreshCw,
+  AlertCircle,
+  XCircle
 } from 'lucide-react';
 import { Peer, MediaConnection } from 'peerjs';
 
@@ -97,10 +98,34 @@ const App: React.FC = () => {
   const audioRef = useRef<HTMLAudioElement>(new Audio());
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
-  // --- Initialize P2P ---
+  // Helper to cleanup all audio and connections
+  const cleanupConnections = useCallback(() => {
+    if (currentCallRef.current) {
+      currentCallRef.current.close();
+      currentCallRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
+    }
+    setIsPeerLinked(false);
+    setConnectionStatus('disconnected');
+    setPttStatus('idle');
+  }, []);
+
+  // --- Initialize P2P with STUN configuration ---
   useEffect(() => {
     const randomId = Math.floor(1000 + Math.random() * 9000).toString();
-    const peer = new Peer(`POC-${randomId}`);
+    
+    const peer = new Peer(`POC-${randomId}`, {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+      }
+    });
     
     peer.on('open', (id) => {
       setMyPeerId(id.replace('POC-', ''));
@@ -115,28 +140,34 @@ const App: React.FC = () => {
         setIsPeerLinked(true);
         setAppMode('human');
         setConnectionStatus('connected');
-      }).catch(() => setErrorMessage("Mic permission denied."));
+      }).catch(() => setErrorMessage("Mic error. Required for P2P."));
     });
 
+    peer.on('disconnected', () => peer.reconnect());
     peer.on('error', (err) => {
-      if (err.type === 'peer-unavailable') setErrorMessage("Unit offline.");
-      setConnectionStatus('disconnected');
+      if (err.type === 'peer-unavailable') setErrorMessage("Remote Unit offline.");
+      else setErrorMessage(`System Error: ${err.type}`);
+      cleanupConnections();
     });
 
     peerRef.current = peer;
-    return () => peer.destroy();
-  }, []);
+    return () => {
+      cleanupConnections();
+      peer.destroy();
+    };
+  }, [cleanupConnections]);
 
   const setupIncomingCall = (call: MediaConnection) => {
     currentCallRef.current = call;
+    
     call.on('stream', (remoteStream) => {
       audioRef.current.srcObject = remoteStream;
-      audioRef.current.play().catch(e => console.error("Playback failed", e));
+      audioRef.current.play().catch(console.error);
       
       const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
-      const ctx = new AC();
-      const source = ctx.createMediaStreamSource(remoteStream);
-      const analyser = ctx.createAnalyser();
+      const audioContext = new AC();
+      const source = audioContext.createMediaStreamSource(remoteStream);
+      const analyser = audioContext.createAnalyser();
       source.connect(analyser);
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       
@@ -144,22 +175,23 @@ const App: React.FC = () => {
         if (!currentCallRef.current) return;
         analyser.getByteFrequencyData(dataArray);
         const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
-        if (volume > 5 && pttStatus !== 'transmitting') {
-          setPttStatus('receiving');
-        } else if (pttStatus === 'receiving' && volume <= 5) {
-          setPttStatus('idle');
-        }
+        if (volume > 10 && pttStatus !== 'transmitting') setPttStatus('receiving');
+        else if (pttStatus === 'receiving' && volume <= 10) setPttStatus('idle');
         requestAnimationFrame(checkVolume);
       };
       checkVolume();
     });
-    call.on('close', () => {
-      setIsPeerLinked(false);
-      setConnectionStatus('disconnected');
-    });
+
+    call.on('close', () => cleanupConnections());
+    call.on('error', () => cleanupConnections());
   };
 
-  const linkToPeer = async () => {
+  const handleLinkToggle = async () => {
+    if (isPeerLinked) {
+      cleanupConnections();
+      return;
+    }
+
     if (!targetPeerId || !peerRef.current) return;
     setConnectionStatus('connecting');
     setErrorMessage(null);
@@ -174,17 +206,21 @@ const App: React.FC = () => {
         setConnectionStatus('connected');
       }
     } catch (err) {
-      setErrorMessage("Microphone is required.");
+      setErrorMessage("Microphone access denied.");
       setConnectionStatus('error');
     }
   };
 
   // --- Gemini Live Session ---
   const connectToGemini = useCallback(async () => {
-    if (connectionStatus === 'connecting' || connectionStatus === 'connected') return;
+    if (connectionStatus === 'connected' || connectionStatus === 'connecting') {
+      setConnectionStatus('disconnected');
+      return;
+    }
+
     const apiKey = process.env.API_KEY;
     if (!apiKey) {
-      setErrorMessage("Missing API Key in Netlify.");
+      setErrorMessage("System Key Missing.");
       return;
     }
 
@@ -228,25 +264,23 @@ const App: React.FC = () => {
       sessionPromiseRef.current = sessionPromise;
       await sessionPromise;
     } catch (err) {
-      setErrorMessage("Link failed.");
+      setErrorMessage("Authorization failed.");
       setConnectionStatus('error');
     }
   }, [connectionStatus]);
 
   const handlePTTDown = async () => {
     if (connectionStatus !== 'connected') return;
+    setErrorMessage(null);
     setPttStatus('transmitting');
+    
     if (appMode === 'human') {
-      if (localStreamRef.current) {
-        localStreamRef.current.getAudioTracks().forEach(t => t.enabled = true);
-      }
+      if (localStreamRef.current) localStreamRef.current.getAudioTracks().forEach(t => t.enabled = true);
     } else {
       const ctx = inputAudioContextRef.current;
       if (ctx) {
         if (ctx.state === 'suspended') await ctx.resume();
-        if (!localStreamRef.current) {
-          localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-        }
+        if (!localStreamRef.current) localStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
         const source = ctx.createMediaStreamSource(localStreamRef.current);
         scriptProcessorRef.current = ctx.createScriptProcessor(4096, 1, 1);
         scriptProcessorRef.current.onaudioprocess = (e) => {
@@ -262,9 +296,7 @@ const App: React.FC = () => {
   const handlePTTUp = () => {
     setPttStatus('idle');
     if (appMode === 'human') {
-      if (localStreamRef.current) {
-        localStreamRef.current.getAudioTracks().forEach(t => t.enabled = false);
-      }
+      if (localStreamRef.current) localStreamRef.current.getAudioTracks().forEach(t => t.enabled = false);
     } else if (scriptProcessorRef.current) {
       scriptProcessorRef.current.disconnect();
       scriptProcessorRef.current = null;
@@ -278,7 +310,7 @@ const App: React.FC = () => {
         {/* Status Bar */}
         <div className="bg-slate-900 h-8 flex items-center justify-between px-8 text-[10px] text-slate-400 font-medium pt-2">
           <div className="flex items-center gap-2">
-            <span className="bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-500/30 font-bold tracking-tight">ID: {myPeerId || '....'}</span>
+            <span className="bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-500/30 font-bold tracking-tight">RADIO ID: {myPeerId || '....'}</span>
           </div>
           <div className="flex items-center gap-2">
             <Signal size={12} className={connectionStatus === 'connected' ? 'text-emerald-500' : 'text-slate-600'} />
@@ -291,16 +323,16 @@ const App: React.FC = () => {
         <div className="px-6 pt-4">
           <div className="bg-slate-800/50 p-1 rounded-2xl flex items-center border border-slate-700/50">
             <button 
-              onClick={() => { setAppMode('dispatch'); setConnectionStatus('disconnected'); setIsPeerLinked(false); }}
+              onClick={() => { setAppMode('dispatch'); cleanupConnections(); }}
               className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[11px] font-black transition-all ${appMode === 'dispatch' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Bot size={14} /> DISPATCH
+              <Bot size={14} /> AI DISPATCH
             </button>
             <button 
               onClick={() => { setAppMode('human'); setConnectionStatus('disconnected'); }}
               className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-[11px] font-black transition-all ${appMode === 'human' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Users size={14} /> HUMAN
+              <Users size={14} /> P2P RADIO
             </button>
           </div>
         </div>
@@ -311,28 +343,28 @@ const App: React.FC = () => {
             <div className="flex gap-2">
               <input 
                 type="text" 
-                placeholder="Target Radio ID"
+                inputMode="numeric"
+                placeholder="Radio ID"
+                disabled={isPeerLinked}
                 value={targetPeerId}
                 onChange={(e) => setTargetPeerId(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                className="flex-1 bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-white placeholder-slate-600"
+                className="flex-1 bg-slate-800/80 border border-slate-700 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-white disabled:opacity-50"
               />
               <button 
-                onClick={linkToPeer}
-                disabled={isPeerLinked}
-                className={`px-4 rounded-xl flex items-center gap-2 text-[11px] font-black transition-all ${isPeerLinked ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-indigo-600 hover:bg-indigo-500 text-white'}`}
+                onClick={handleLinkToggle}
+                className={`px-4 rounded-xl flex items-center gap-2 text-[11px] font-black transition-all ${isPeerLinked ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-30'}`}
               >
-                {isPeerLinked ? <Wifi size={14} /> : <LinkIcon size={14} />}
-                {isPeerLinked ? 'LINKED' : 'CONNECT'}
+                {isPeerLinked ? <XCircle size={14} /> : <LinkIcon size={14} />}
+                {isPeerLinked ? 'UNLINK' : 'LINK'}
               </button>
             </div>
           ) : (
             <button 
               onClick={connectToGemini}
-              disabled={connectionStatus === 'connected'}
               className={`w-full py-2.5 rounded-xl flex items-center justify-center gap-2 text-[11px] font-black transition-all ${connectionStatus === 'connected' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-slate-800 hover:bg-slate-700 text-white border border-slate-700'}`}
             >
               {connectionStatus === 'connecting' ? <RefreshCw size={14} className="animate-spin" /> : <Signal size={14} />}
-              {connectionStatus === 'connected' ? 'LINK ESTABLISHED' : 'AUTHORIZE FREQUENCY'}
+              {connectionStatus === 'connected' ? 'SATELLITE ACTIVE' : 'AUTHORIZE DISPATCH'}
             </button>
           )}
         </div>
@@ -348,8 +380,8 @@ const App: React.FC = () => {
               pttStatus === 'transmitting' ? 'text-red-400' :
               pttStatus === 'receiving' ? 'text-emerald-400' : 'text-slate-600'
             }`}>
-              {pttStatus === 'transmitting' ? 'Broadcasting TX' : 
-               pttStatus === 'receiving' ? 'Receiving RX' : 'Frequency Clear'}
+              {pttStatus === 'transmitting' ? 'Signal Out TX' : 
+               pttStatus === 'receiving' ? 'Incoming Signal RX' : 'Standby Mode'}
             </span>
             <div className="flex items-end gap-1.5 h-12">
               {[...Array(15)].map((_, i) => (
@@ -376,16 +408,20 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Center UI Spacer */}
-        <div className="flex-1" />
+        <div className="flex-1 flex flex-col items-center justify-center text-center px-8 opacity-40">
+           {connectionStatus === 'connected' && (
+             <div className="flex flex-col items-center gap-2">
+               <AlertCircle size={20} className="text-emerald-500" />
+               <p className="text-[10px] uppercase font-bold tracking-widest text-emerald-400">
+                 Secure Link Established
+               </p>
+             </div>
+           )}
+        </div>
 
         {/* PTT Interface */}
         <div className="p-10 bg-slate-800/30 border-t border-slate-800/50 rounded-t-[3.5rem] flex flex-col items-center gap-8">
-          <div className="flex items-center justify-around w-full">
-            <button className="w-12 h-12 rounded-full bg-slate-800/50 flex items-center justify-center text-slate-500 border border-slate-700/50 active:scale-90 transition-transform">
-              <Settings size={20} />
-            </button>
-            
+          <div className="flex items-center justify-center w-full">
             <div className="relative group">
               <div className={`absolute -inset-6 rounded-full border border-dashed transition-all duration-500 ${
                 pttStatus === 'transmitting' ? 'border-red-500/50 scale-125 rotate-180' : 'border-indigo-500/10 scale-100 rotate-0'
@@ -397,25 +433,21 @@ const App: React.FC = () => {
                 onTouchStart={(e) => { e.preventDefault(); handlePTTDown(); }}
                 onTouchEnd={(e) => { e.preventDefault(); handlePTTUp(); }}
                 disabled={connectionStatus !== 'connected'}
-                className={`w-36 h-36 rounded-full flex flex-col items-center justify-center transition-all duration-75 active:scale-95 disabled:opacity-20 shadow-2xl relative z-10 ${
+                className={`w-40 h-40 rounded-full flex flex-col items-center justify-center transition-all duration-75 active:scale-95 disabled:opacity-20 shadow-2xl relative z-10 ${
                   pttStatus === 'transmitting' ? 
                   'bg-gradient-to-br from-red-500 to-red-700 border-4 border-red-400/50 animate-transmit' :
                   'bg-gradient-to-br from-indigo-500 to-indigo-700 border-4 border-indigo-400/30'
                 }`}
               >
-                {pttStatus === 'transmitting' ? <Mic size={52} className="text-white drop-shadow-lg" /> : <MicOff size={52} className="text-white/60" />}
-                <span className="text-[10px] font-black mt-3 text-white uppercase tracking-[0.2em]">PTT</span>
+                {pttStatus === 'transmitting' ? <Mic size={56} className="text-white drop-shadow-lg" /> : <MicOff size={56} className="text-white/60" />}
+                <span className="text-[11px] font-black mt-3 text-white uppercase tracking-[0.2em]">PTT BUTTON</span>
               </button>
             </div>
-
-            <button className="w-12 h-12 rounded-full bg-slate-800/50 flex items-center justify-center text-slate-500 border border-slate-700/50 active:scale-90 transition-transform">
-              <History size={20} />
-            </button>
           </div>
           
           <div className="flex flex-col items-center gap-2">
             <div className="h-1.5 w-16 bg-slate-700/50 rounded-full" />
-            <p className="text-[9px] text-slate-600 font-bold uppercase tracking-[0.4em]">Secure Satellite Protocol</p>
+            <p className="text-[9px] text-slate-600 font-bold uppercase tracking-[0.4em]">Satellite Radio Standard</p>
           </div>
         </div>
       </div>
