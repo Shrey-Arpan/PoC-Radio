@@ -1,19 +1,18 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Gemini PoC Radio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Talkie Talkie</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.2.4",
-    "react-dom": "https://esm.sh/react-dom@^19.2.4",
-    "react-dom/client": "https://esm.sh/react-dom@^19.2.4/client",
-    "@google/genai": "https://esm.sh/@google/genai@^1.41.0",
-    "lucide-react": "https://esm.sh/lucide-react@^0.564.0?external=react",
+    "react": "https://esm.sh/react@19.2.4",
+    "react-dom": "https://esm.sh/react-dom@19.2.4",
+    "react-dom/client": "https://esm.sh/react-dom@19.2.4/client",
+    "@google/genai": "https://esm.sh/@google/genai@1.41.0",
+    "lucide-react": "https://esm.sh/lucide-react@0.475.0?external=react",
     "peerjs": "https://esm.sh/peerjs@1.5.4",
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
     "react/": "https://esm.sh/react@^19.2.4/"
@@ -21,27 +20,44 @@
 }
 </script>
     <style>
-      body { -webkit-tap-highlight-color: transparent; }
+      body { 
+        -webkit-tap-highlight-color: transparent; 
+        overscroll-behavior: none;
+        background-color: #020617;
+      }
       .bg-grid { background-image: radial-gradient(circle at 1px 1px, #1e293b 1px, transparent 0); background-size: 24px 24px; }
+      @keyframes transmit-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+        70% { box-shadow: 0 0 0 20px rgba(239, 68, 68, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+      }
+      .animate-transmit { animation: transmit-pulse 1.5s infinite; }
     </style>
   </head>
-  <body class="bg-slate-900 text-slate-100 overflow-hidden bg-grid">
+  <body class="bg-slate-950 text-slate-100 overflow-hidden bg-grid">
     <div id="root"></div>
+    
+    <!-- Process Shim -->
+    <script>
+      window.process = window.process || { env: {} };
+    </script>
+    
+    <!-- Entry Point -->
+    <script type="module" src="./index.tsx"></script>
+
     <script>
       // Global error logger for mobile debugging
       window.onerror = function(msg, url, lineNo, columnNo, error) {
-        const errorDiv = document.createElement('div');
-        errorDiv.style.position = 'fixed';
-        errorDiv.style.top = '0';
-        errorDiv.style.left = '0';
-        errorDiv.style.background = 'rgba(255,0,0,0.8)';
-        errorDiv.style.color = 'white';
-        errorDiv.style.padding = '10px';
-        errorDiv.style.fontSize = '10px';
-        errorDiv.style.zIndex = '9999';
-        errorDiv.innerHTML = 'Error: ' + msg + ' at line ' + lineNo;
-        // console.log(error);
-        // document.body.appendChild(errorDiv); // Uncomment to see errors on phone screen
+        console.error('Global Error:', msg, 'at', lineNo, ':', columnNo);
+        const root = document.getElementById('root');
+        if (root && root.innerHTML === '') {
+          root.innerHTML = `<div style="padding: 20px; color: #f87171; font-family: sans-serif; font-size: 14px;">
+            <h1 style="font-size: 18px; margin-bottom: 10px;">Critical Startup Error</h1>
+            <p>${msg}</p>
+            <p style="font-size: 10px; opacity: 0.5;">Line ${lineNo}:${columnNo}</p>
+            <button onclick="location.reload()" style="margin-top: 20px; background: #4f46e5; color: white; padding: 8px 16px; border-radius: 8px; border: none;">Retry</button>
+          </div>`;
+        }
         return false;
       };
     </script>
